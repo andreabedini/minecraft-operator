@@ -1,0 +1,356 @@
+// The supervisor is the in-pod agent of the Minecraft operator. It manages one
+// data directory and one long-running process and knows nothing about
+// Minecraft. Every path in this API is relative to the data root; paths that
+// escape it are rejected.
+syntax = "proto3";
+
+package supervisor.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+service SupervisorService {
+  // Process lifecycle.
+  rpc Status(StatusRequest) returns (StatusResponse);
+  // Persists the launch spec on the data root. Does not start the process.
+  rpc SetLaunch(SetLaunchRequest) returns (SetLaunchResponse);
+  rpc Start(StartRequest) returns (StartResponse);
+  // Writes the stop command to stdin, waits, then kills after the timeout.
+  rpc Stop(StopRequest) returns (StopResponse);
+  rpc Restart(RestartRequest) returns (RestartResponse);
+  // Replays recent console lines, then follows. Input messages are written
+  // to the process's stdin.
+  rpc Console(stream ConsoleRequest) returns (stream ConsoleResponse);
+
+  // Install. Refused while the process is running.
+  rpc Download(DownloadRequest) returns (stream DownloadResponse);
+  rpc Run(RunRequest) returns (stream RunResponse);
+
+  // Files.
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+  rpc ReadFile(ReadFileRequest) returns (stream ReadFileResponse);
+  // Staged by default; immediate writes are refused while running.
+  rpc WriteFile(stream WriteFileRequest) returns (WriteFileResponse);
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+  // Moves the staged tree into place. Refused while running.
+  rpc ApplyStaged(ApplyStagedRequest) returns (ApplyStagedResponse);
+  // Streams a tar archive. With consistent=true the launch spec's quiesce
+  // hook runs first and its resume hook afterwards.
+  rpc Archive(ArchiveRequest) returns (stream ArchiveResponse);
+
+  // Raw byte tunnel to a loopback target named in the launch spec.
+  rpc Tunnel(stream TunnelRequest) returns (stream TunnelResponse);
+}
+
+enum ProcessState {
+  PROCESS_STATE_UNSPECIFIED = 0;
+  PROCESS_STATE_STOPPED = 1;
+  PROCESS_STATE_RUNNING = 2;
+  PROCESS_STATE_STOPPING = 3;
+}
+
+enum Stream {
+  STREAM_UNSPECIFIED = 0;
+  STREAM_STDOUT = 1;
+  STREAM_STDERR = 2;
+  // Lines produced by the supervisor itself (start, exit, hooks).
+  STREAM_SUPERVISOR = 3;
+}
+
+enum DigestAlgorithm {
+  DIGEST_ALGORITHM_UNSPECIFIED = 0;
+  DIGEST_ALGORITHM_SHA1 = 1;
+  DIGEST_ALGORITHM_SHA256 = 2;
+  DIGEST_ALGORITHM_SHA512 = 3;
+}
+
+message Digest {
+  DigestAlgorithm algorithm = 1;
+  // Lower-case hex.
+  string hex = 2;
+}
+
+enum RestartPolicy {
+  RESTART_POLICY_UNSPECIFIED = 0;
+  // Never relaunch after the process exits on its own.
+  RESTART_POLICY_NEVER = 1;
+  // Relaunch after a non-zero exit, with exponential backoff.
+  RESTART_POLICY_ON_FAILURE = 2;
+  // Relaunch after any exit that was not requested through Stop.
+  RESTART_POLICY_ALWAYS = 3;
+}
+
+// A hook writes console commands and optionally waits for a line matching a
+// regular expression before returning.
+message ConsoleHook {
+  repeated string commands = 1;
+  // RE2 syntax. Empty means do not wait.
+  string wait_for = 2;
+  google.protobuf.Duration timeout = 3;
+}
+
+message TunnelTarget {
+  // host:port on loopback, e.g. "127.0.0.1:25585".
+  string address = 1;
+}
+
+message LaunchSpec {
+  string command = 1;
+  repeated string args = 2;
+  // Relative to the data root. Empty means the data root.
+  string working_dir = 3;
+  map<string, string> env = 4;
+  // Launch on supervisor boot without waiting for a Start call.
+  bool autostart = 5;
+  RestartPolicy restart_policy = 6;
+  // Written to stdin on Stop. Empty means send SIGTERM instead.
+  string stop_command = 7;
+  google.protobuf.Duration stop_timeout = 8;
+  // Runs before a consistent Archive (e.g. save-off, save-all flush).
+  ConsoleHook quiesce = 9;
+  // Runs after a consistent Archive (e.g. save-on).
+  ConsoleHook resume = 10;
+  map<string, TunnelTarget> tunnel_targets = 11;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  ProcessState state = 1;
+  int32 pid = 2;
+  google.protobuf.Timestamp started_at = 3;
+  optional int32 last_exit_code = 4;
+  google.protobuf.Timestamp last_exit_at = 5;
+  bool has_launch_spec = 6;
+  // sha256 of the canonical launch spec, for the operator's drift check.
+  string launch_spec_hash = 7;
+  int32 staged_count = 8;
+  string supervisor_version = 9;
+  string data_root = 10;
+}
+
+message SetLaunchRequest {
+  LaunchSpec spec = 1;
+}
+
+message SetLaunchResponse {
+  string launch_spec_hash = 1;
+}
+
+message StartRequest {}
+
+message StartResponse {
+  int32 pid = 1;
+}
+
+message StopRequest {
+  // Overrides the launch spec's stop_timeout.
+  google.protobuf.Duration timeout = 1;
+  // Skip the stop command and kill immediately.
+  bool kill = 2;
+}
+
+message StopResponse {
+  int32 exit_code = 1;
+}
+
+message RestartRequest {
+  google.protobuf.Duration stop_timeout = 1;
+}
+
+message RestartResponse {
+  int32 pid = 1;
+}
+
+message ConsoleSubscribe {
+  // Number of buffered lines to replay before following.
+  int32 replay_lines = 1;
+}
+
+message ConsoleRequest {
+  oneof message {
+    // Must be the first message.
+    ConsoleSubscribe subscribe = 1;
+    // A line written to stdin. A trailing newline is added if missing.
+    string input = 2;
+  }
+}
+
+message ConsoleLine {
+  uint64 sequence = 1;
+  google.protobuf.Timestamp time = 2;
+  Stream stream = 3;
+  string text = 4;
+}
+
+message ConsoleResponse {
+  ConsoleLine line = 1;
+}
+
+message DownloadRequest {
+  string url = 1;
+  string path = 2;
+  // Optional. When set the download fails if the digest does not match.
+  Digest expected = 3;
+  // Unix permission bits. Zero means 0644.
+  uint32 file_mode = 4;
+}
+
+message DownloadProgress {
+  uint64 bytes = 1;
+  // -1 when the server did not send a length.
+  int64 total = 2;
+}
+
+message DownloadResult {
+  uint64 size = 1;
+  // sha1, sha256 and sha512 of the file, always computed.
+  repeated Digest digests = 2;
+}
+
+message DownloadResponse {
+  oneof event {
+    DownloadProgress progress = 1;
+    DownloadResult result = 2;
+  }
+}
+
+message RunRequest {
+  string command = 1;
+  repeated string args = 2;
+  string working_dir = 3;
+  map<string, string> env = 4;
+  google.protobuf.Duration timeout = 5;
+}
+
+message OutputLine {
+  Stream stream = 1;
+  string text = 2;
+}
+
+message RunResult {
+  int32 exit_code = 1;
+  google.protobuf.Duration duration = 2;
+}
+
+message RunResponse {
+  oneof event {
+    OutputLine output = 1;
+    RunResult result = 2;
+  }
+}
+
+message FileInfo {
+  string path = 1;
+  uint64 size = 2;
+  google.protobuf.Timestamp modified_at = 3;
+  uint32 file_mode = 4;
+  bool is_dir = 5;
+  bool is_symlink = 6;
+  // Set when requested and the entry is a regular file.
+  Digest digest = 7;
+}
+
+message ListFilesRequest {
+  string path = 1;
+  bool recursive = 2;
+  // Unspecified means no digest.
+  DigestAlgorithm digest_algorithm = 3;
+}
+
+message ListFilesResponse {
+  repeated FileInfo files = 1;
+}
+
+message ReadFileRequest {
+  string path = 1;
+  uint64 offset = 2;
+  // Zero means to the end of the file.
+  uint64 length = 3;
+}
+
+message ReadFileResponse {
+  oneof message {
+    // First message.
+    FileInfo info = 1;
+    bytes data = 2;
+  }
+}
+
+enum WriteMode {
+  WRITE_MODE_UNSPECIFIED = 0;
+  // Written under the staged tree, applied by ApplyStaged.
+  WRITE_MODE_STAGED = 1;
+  // Written in place. Refused while the process is running.
+  WRITE_MODE_IMMEDIATE = 2;
+}
+
+message WriteFileHeader {
+  string path = 1;
+  WriteMode mode = 2;
+  // Unix permission bits. Zero means 0644.
+  uint32 file_mode = 3;
+}
+
+message WriteFileRequest {
+  oneof message {
+    // Must be the first message.
+    WriteFileHeader header = 1;
+    bytes data = 2;
+  }
+}
+
+message WriteFileResponse {
+  uint64 size = 1;
+  repeated Digest digests = 2;
+  bool staged = 3;
+}
+
+message DeleteFileRequest {
+  string path = 1;
+  WriteMode mode = 2;
+  bool recursive = 3;
+}
+
+message DeleteFileResponse {}
+
+message ApplyStagedRequest {}
+
+message ApplyStagedResponse {
+  repeated string written = 1;
+  repeated string deleted = 2;
+}
+
+enum Compression {
+  COMPRESSION_UNSPECIFIED = 0;
+  COMPRESSION_NONE = 1;
+  COMPRESSION_GZIP = 2;
+}
+
+message ArchiveRequest {
+  // Empty means the whole data root, excluding the supervisor's own state.
+  repeated string paths = 1;
+  bool consistent = 2;
+  Compression compression = 3;
+}
+
+message ArchiveResponse {
+  bytes data = 1;
+}
+
+message TunnelOpen {
+  // A key of the launch spec's tunnel_targets.
+  string target = 1;
+}
+
+message TunnelRequest {
+  oneof message {
+    // Must be the first message.
+    TunnelOpen open = 1;
+    bytes data = 2;
+  }
+}
+
+message TunnelResponse {
+  bytes data = 1;
+}

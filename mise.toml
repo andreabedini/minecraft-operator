@@ -1,0 +1,27 @@
+# schema: https://mise.jdx.dev/schema/mise.json
+
+[tools]
+"aqua:bufbuild/buf" = "latest"
+"aqua:fullstorydev/grpcurl" = "latest"
+"aqua:golangci/golangci-lint" = "latest"
+"go:connectrpc.com/connect/cmd/protoc-gen-connect-go" = "latest"
+"go:google.golang.org/protobuf/cmd/protoc-gen-go" = "latest"
+
+[env]
+_.path = ["{{config_root}}/bin"]
+
+[tasks.generate]
+description = "Regenerate protobuf and connect code"
+run = "buf generate"
+
+[tasks.lint]
+description = "Lint proto and Go"
+run = ["buf lint", "golangci-lint run ./..."]
+
+[tasks.test]
+description = "Run Go tests with the race detector"
+run = "go test -race ./..."
+
+[tasks.build-supervisor]
+description = "Build the static supervisor binary"
+run = "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/supervisor ./cmd/supervisor"

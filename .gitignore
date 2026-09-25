@@ -1,0 +1,12 @@
+# Go
+bin/
+/dist/
+*.test
+coverage.out
+
+# Editors
+.idea/
+.vscode/
+
+# Sandbox-local GOPATH (module + sumdb cache) (session convenience only)
+.gopath/
