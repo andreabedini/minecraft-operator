@@ -27,10 +27,9 @@ spec:
           args:
             - --leader-elect
           env:
-            # The supervisor image copied into every server pod. Pin it to
-            # the operator's own version in the overlay.
-            - name: SUPERVISOR_IMAGE
-              value: ghcr.io/andreabedini/minecraft-operator/supervisor:latest
+            # SUPERVISOR_IMAGE (the image copied into every server pod)
+            # defaults to the supervisor built with the operator:
+            # ghcr.io/andreabedini/minecraft-operator/supervisor:<version>.
             - name: JAVA_IMAGE_TEMPLATE
               value: eclipse-temurin:%d-jre
           ports:

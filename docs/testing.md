@@ -11,7 +11,8 @@ Four tiers. The first two run on every `mise run test`; the last needs kind.
 
 ## End-to-end
 
-`mise run e2e` builds three images with podman, creates a dual-stack kind
+`mise run e2e` builds the operator and supervisor images with ko (the same
+build CI publishes) and the fake server image with podman, creates a dual-stack kind
 cluster from `hack/kind-config.yaml` (rootless podman via
 `KIND_EXPERIMENTAL_PROVIDER=podman`), loads the images, applies
 `config/e2e`, and runs `go test -tags e2e ./test/e2e/...`. The suite is

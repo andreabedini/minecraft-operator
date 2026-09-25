@@ -1,0 +1,18 @@
+# ko builds the operator and supervisor images: `ko build -B ./cmd/...`.
+# VERSION (default "dev") is baked into both binaries. The operator derives its
+# default supervisor image tag from it, so push both images with that tag.
+defaultBaseImage: cgr.dev/chainguard/static:latest
+defaultPlatforms:
+  - linux/amd64
+  - linux/arm64
+builds:
+  - id: operator
+    main: ./cmd/operator
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ['-s -w -X main.version={{ or (index .Env "VERSION") "dev" }}']
+  - id: supervisor
+    main: ./cmd/supervisor
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ['-s -w -X main.version={{ or (index .Env "VERSION") "dev" }}']

@@ -8,6 +8,7 @@ kubectl = "1.37"
 "go:connectrpc.com/connect/cmd/protoc-gen-connect-go" = "latest"
 "go:google.golang.org/protobuf/cmd/protoc-gen-go" = "latest"
 "go:sigs.k8s.io/controller-tools/cmd/controller-gen" = "latest"
+ko = "latest"
 
 [env]
 _.path = ["{{config_root}}/bin"]
@@ -34,10 +35,14 @@ description = "Build the operator binary"
 run = "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/operator ./cmd/operator"
 
 [tasks.build-images-e2e]
-description = "Build the operator, supervisor and fake server images for the kind e2e tests"
+description = "Build the operator and supervisor (ko) and fake server (podman) images for the kind e2e tests"
+env = { KO_DOCKER_REPO = "docker.io/minecraft-operator", VERSION = "e2e" }
 run = [
-  "podman build -f Dockerfile.operator -t docker.io/minecraft-operator/operator:e2e .",
-  "podman build -f Dockerfile.supervisor -t docker.io/minecraft-operator/supervisor:e2e .",
+  "mkdir -p dist",
+  "ko build -B --tags e2e --platform linux/$(go env GOARCH) --push=false --tarball dist/operator.tar ./cmd/operator",
+  "ko build -B --tags e2e --platform linux/$(go env GOARCH) --push=false --tarball dist/supervisor.tar ./cmd/supervisor",
+  "podman load -i dist/operator.tar",
+  "podman load -i dist/supervisor.tar",
   "podman build -f Dockerfile.fakeserver -t docker.io/minecraft-operator/fakeserver:e2e .",
 ]
 
