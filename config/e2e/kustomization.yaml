@@ -1,0 +1,29 @@
+# Overlay for the kind end-to-end tests: locally built images, a fake
+# publisher inside the cluster, and supervisors allowed to download over
+# plain http from it.
+resources:
+  - ../default
+  - fake-upstream.yaml
+images:
+  - name: ghcr.io/andreabedini/minecraft-operator/operator
+    newName: docker.io/minecraft-operator/operator
+    newTag: e2e
+patches:
+  - target:
+      kind: Deployment
+      name: minecraft-operator
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value: []
+      - op: replace
+        path: /spec/template/spec/containers/0/env
+        value:
+          - {name: SUPERVISOR_IMAGE, value: docker.io/minecraft-operator/supervisor:e2e}
+          - {name: JAVA_IMAGE_TEMPLATE, value: "docker.io/minecraft-operator/fakeserver:e2e"}
+          - {name: SUPERVISOR_ALLOW_INSECURE_DOWNLOADS, value: "true"}
+          - {name: UPSTREAM_MOJANG_MANIFEST_URL, value: http://fake-upstream.minecraft-operator.svc:8080/mojang/version_manifest_v2.json}
+          - {name: UPSTREAM_FABRIC_META_URL, value: http://fake-upstream.minecraft-operator.svc:8080/fabric}

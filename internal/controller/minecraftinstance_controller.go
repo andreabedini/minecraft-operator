@@ -56,6 +56,9 @@ type MinecraftInstanceReconciler struct {
 	// ManagementPort overrides the management protocol's loopback port
 	// (tests). Zero means plan.ManagementPort.
 	ManagementPort int
+	// SupervisorInsecureDownloads passes -allow-insecure-downloads to every
+	// supervisor (tests and mirrors only).
+	SupervisorInsecureDownloads bool
 
 	plans      sync.Map // string(uid)/generation → *plan.Plan
 	watchersMu sync.Mutex
@@ -430,7 +433,7 @@ func (r *MinecraftInstanceReconciler) ensureDeployment(ctx context.Context, inst
 	if inst.Spec.Supervisor.Image != "" {
 		supervisorImage = inst.Spec.Supervisor.Image
 	}
-	desired, err := buildDeployment(inst, DeploymentInput{JavaImage: p.JavaImage, SupervisorImage: supervisorImage})
+	desired, err := buildDeployment(inst, DeploymentInput{JavaImage: p.JavaImage, SupervisorImage: supervisorImage, InsecureDownloads: r.SupervisorInsecureDownloads})
 	if err != nil {
 		return err
 	}

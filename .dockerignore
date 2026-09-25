@@ -1,0 +1,7 @@
+.gopath/
+.jj/
+.git/
+bin/
+dist/
+docs/
+*.md

@@ -81,7 +81,8 @@ Tools are declared in `mise.toml` (buf, protoc-gen-go, protoc-gen-connect-go,
 grpcurl, golangci-lint).
 
 ```sh
-mise run generate   # buf generate
+mise run generate   # buf generate, controller-gen
 mise run test       # go test -race ./...
 mise run lint
+mise run e2e        # kind end-to-end tests, see docs/testing.md
 ```

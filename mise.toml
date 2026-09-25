@@ -1,6 +1,7 @@
 # schema: https://mise.jdx.dev/schema/mise.json
 
 [tools]
+kubectl = "1.37"
 "aqua:bufbuild/buf" = "latest"
 "aqua:fullstorydev/grpcurl" = "latest"
 "aqua:golangci/golangci-lint" = "latest"
@@ -31,6 +32,20 @@ run = "go test -race ./..."
 [tasks.build-operator]
 description = "Build the operator binary"
 run = "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/operator ./cmd/operator"
+
+[tasks.build-images-e2e]
+description = "Build the operator, supervisor and fake server images for the kind e2e tests"
+run = [
+  "podman build -f Dockerfile.operator -t docker.io/minecraft-operator/operator:e2e .",
+  "podman build -f Dockerfile.supervisor -t docker.io/minecraft-operator/supervisor:e2e .",
+  "podman build -f Dockerfile.fakeserver -t docker.io/minecraft-operator/fakeserver:e2e .",
+]
+
+[tasks.e2e]
+description = "Run the kind end-to-end tests (creates and destroys the cluster; E2E_KEEP=1 keeps it)"
+depends = ["build-images-e2e"]
+env = { KIND_EXPERIMENTAL_PROVIDER = "podman" }
+run = "go test -tags e2e -count=1 -timeout 30m -v ./test/e2e/..."
 
 [tasks.build-supervisor]
 description = "Build the static supervisor binary"

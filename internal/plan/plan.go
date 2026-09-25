@@ -121,10 +121,14 @@ func Resolve(ctx context.Context, r *upstream.Resolver, spec *v1alpha1.Minecraft
 			JavaMajor: int32(vanilla.JavaMajor),
 		},
 	}
-	if spec.Java.Image != "" {
+	switch {
+	case spec.Java.Image != "":
 		p.JavaImage = spec.Java.Image
-	} else {
+	case strings.Contains(opts.JavaImageTemplate, "%d"):
 		p.JavaImage = fmt.Sprintf(opts.JavaImageTemplate, vanilla.JavaMajor)
+	default:
+		// A template without %d is a fixed image (the e2e fake server).
+		p.JavaImage = opts.JavaImageTemplate
 	}
 	p.Resolved.JavaImage = p.JavaImage
 

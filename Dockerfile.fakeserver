@@ -1,0 +1,13 @@
+# Fake Minecraft server for end-to-end tests. Installed as /usr/bin/java so
+# the supervisor's launch spec runs it unchanged; "java publish" serves fake
+# publisher endpoints (Mojang manifest, Fabric meta) instead.
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/java ./hack/fakeserver
+
+FROM scratch
+COPY --from=build /out/java /usr/bin/java
+ENTRYPOINT ["/usr/bin/java"]

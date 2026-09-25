@@ -212,6 +212,8 @@ func buildSupervisorService(inst *v1alpha1.MinecraftInstance) *corev1.Service {
 type DeploymentInput struct {
 	JavaImage       string
 	SupervisorImage string
+	// InsecureDownloads adds -allow-insecure-downloads to the supervisor.
+	InsecureDownloads bool
 }
 
 // buildPodTemplate returns the pod template before overrides.
@@ -228,6 +230,15 @@ func buildPodTemplate(inst *v1alpha1.MinecraftInstance, in DeploymentInput) core
 		ports = append(ports, corev1.ContainerPort{Name: p.Name, ContainerPort: p.Port, Protocol: proto})
 	}
 	dataMount := corev1.VolumeMount{Name: "data", MountPath: dataMountPath, SubPath: inst.Spec.Storage.SubPath}
+	supervisorArgs := []string{
+		"-data-root", dataMountPath,
+		"-listen", fmt.Sprintf(":%d", supervisorPort),
+		"-token-file", supervisorSecrets + "/" + secretKeyToken,
+		"-readonly-token-file", supervisorSecrets + "/" + secretKeyReadOnlyToken,
+	}
+	if in.InsecureDownloads {
+		supervisorArgs = append(supervisorArgs, "-allow-insecure-downloads")
+	}
 	restricted := &corev1.SecurityContext{
 		AllowPrivilegeEscalation: ptr.To(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
@@ -259,12 +270,7 @@ func buildPodTemplate(inst *v1alpha1.MinecraftInstance, in DeploymentInput) core
 				Name:    "server",
 				Image:   in.JavaImage,
 				Command: []string{supervisorBinPath},
-				Args: []string{
-					"-data-root", dataMountPath,
-					"-listen", fmt.Sprintf(":%d", supervisorPort),
-					"-token-file", supervisorSecrets + "/" + secretKeyToken,
-					"-readonly-token-file", supervisorSecrets + "/" + secretKeyReadOnlyToken,
-				},
+				Args:    supervisorArgs,
 				Env: []corev1.EnvVar{
 					{Name: "HOME", Value: dataMountPath},
 					{Name: "SUPERVISOR_DATA_ROOT", Value: dataMountPath},

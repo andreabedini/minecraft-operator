@@ -10,3 +10,6 @@ coverage.out
 
 # Sandbox-local GOPATH (module + sumdb cache) (session convenience only)
 .gopath/
+/fakeserver
+/operator
+/supervisor

@@ -29,6 +29,14 @@ func main() {
 		leaderElect       = flag.Bool("leader-elect", false, "enable leader election")
 		supervisorImage   = flag.String("supervisor-image", envOr("SUPERVISOR_IMAGE", "ghcr.io/andreabedini/minecraft-operator/supervisor:"+version), "supervisor image copied into server pods")
 		javaImageTemplate = flag.String("java-image-template", envOr("JAVA_IMAGE_TEMPLATE", plan.DefaultJavaImageTemplate), "JRE image template; %d is the Java major")
+		insecureDownloads = flag.Bool("supervisor-allow-insecure-downloads", envOr("SUPERVISOR_ALLOW_INSECURE_DOWNLOADS", "") == "true", "let supervisors download from http:// URLs (tests and mirrors only)")
+		// Upstream overrides, for mirrors and end-to-end tests.
+		mojangURL   = flag.String("upstream-mojang-manifest-url", envOr("UPSTREAM_MOJANG_MANIFEST_URL", upstream.DefaultMojangManifestURL), "Mojang version manifest URL")
+		fabricURL   = flag.String("upstream-fabric-meta-url", envOr("UPSTREAM_FABRIC_META_URL", upstream.DefaultFabricMetaURL), "Fabric meta API base URL")
+		paperURL    = flag.String("upstream-paper-api-url", envOr("UPSTREAM_PAPER_API_URL", upstream.DefaultPaperAPIURL), "PaperMC Fill API base URL")
+		forgeFiles  = flag.String("upstream-forge-files-url", envOr("UPSTREAM_FORGE_FILES_URL", upstream.DefaultForgeFilesURL), "Forge files base URL")
+		forgeMaven  = flag.String("upstream-forge-maven-url", envOr("UPSTREAM_FORGE_MAVEN_URL", upstream.DefaultForgeMavenURL), "Forge maven base URL")
+		modrinthURL = flag.String("upstream-modrinth-api-url", envOr("UPSTREAM_MODRINTH_API_URL", upstream.DefaultModrinthAPIURL), "Modrinth API base URL")
 	)
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -52,15 +60,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	resolver := upstream.NewResolver("minecraft-operator/" + version)
+	resolver.MojangManifestURL = *mojangURL
+	resolver.FabricMetaURL = *fabricURL
+	resolver.PaperAPIURL = *paperURL
+	resolver.ForgeFilesURL = *forgeFiles
+	resolver.ForgeMavenURL = *forgeMaven
+	resolver.ModrinthAPIURL = *modrinthURL
+
 	reconciler := &controller.MinecraftInstanceReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		// The core/v1 events API is still what kubectl describe shows best;
 		// the new events.k8s.io recorder changes the interface.
-		Recorder:          mgr.GetEventRecorderFor("minecraft-operator"), //nolint:staticcheck
-		Resolver:          upstream.NewResolver("minecraft-operator/" + version),
-		SupervisorImage:   *supervisorImage,
-		JavaImageTemplate: *javaImageTemplate,
+		Recorder:                    mgr.GetEventRecorderFor("minecraft-operator"), //nolint:staticcheck
+		Resolver:                    resolver,
+		SupervisorImage:             *supervisorImage,
+		JavaImageTemplate:           *javaImageTemplate,
+		SupervisorInsecureDownloads: *insecureDownloads,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to create controller")

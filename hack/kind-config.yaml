@@ -1,0 +1,8 @@
+# kind cluster for the end-to-end tests. Dual-stack so IPv6 pod addresses
+# reach the supervisor URL formatting, like the IPv6-only homelab cluster.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  ipFamily: dual
+nodes:
+  - role: control-plane
