@@ -35,14 +35,14 @@ jobs:
     permissions:
       contents: write # the release
       packages: write # ghcr.io
-    env:
-      KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: ko-build/setup-ko@v0.9 # logs in to ghcr.io with GITHUB_TOKEN
+      # Sets KO_DOCKER_REPO=ghcr.io/<owner>/<repo> and logs in to ghcr.io
+      # with GITHUB_TOKEN; it skips both when KO_DOCKER_REPO is preset.
+      - uses: ko-build/setup-ko@v0.10
 
       - name: Version and tags
         run: |
@@ -55,7 +55,6 @@ jobs:
             echo "VERSION=$version"
             echo "TAGS=$tags"
             echo "PUSH=$push"
-            echo "KO_DOCKER_REPO=${KO_DOCKER_REPO,,}"
           } >> "$GITHUB_ENV"
 
       - name: Build
