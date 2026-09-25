@@ -6,10 +6,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -33,6 +35,14 @@ func (l *stringList) String() string     { return strings.Join(*l, ",") }
 func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 
 func main() {
+	// "copy-self DEST" copies this binary to DEST. The init container uses it
+	// because the scratch image has no cp.
+	if len(os.Args) == 3 && os.Args[1] == "copy-self" {
+		if err := copySelf(os.Args[2]); err != nil {
+			fatal("copy-self: %v", err)
+		}
+		return
+	}
 	var (
 		dataRoot          = flag.String("data-root", envOr("SUPERVISOR_DATA_ROOT", "/data"), "directory the supervisor manages")
 		listen            = flag.String("listen", envOr("SUPERVISOR_LISTEN", ":9800"), "address to serve the API on")
@@ -152,6 +162,34 @@ func main() {
 	httpCtx, httpCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer httpCancel()
 	_ = httpServer.Shutdown(httpCtx)
+}
+
+func copySelf(dest string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	src, err := os.Open(self)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	tmp := dest + ".tmp"
+	dst, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dest)
 }
 
 func envOr(key, def string) string {

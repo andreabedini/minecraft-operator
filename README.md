@@ -12,8 +12,14 @@ for the design.
 | `proto/supervisor/v1/` | The supervisor's gRPC API |
 | `gen/` | Generated protobuf and Connect code (`buf generate`) |
 | `internal/supervisor/` | The supervisor: process management, console, files, downloads, tunnel |
-| `cmd/supervisor/` | The supervisor binary |
-| `Dockerfile.supervisor` | Static supervisor image (`FROM scratch`) |
+| `internal/supervisorclient/` | The operator's client for one supervisor |
+| `internal/upstream/` | Version and artifact resolution: Mojang, Fabric, Paper (Fill v3), Forge, Modrinth |
+| `internal/plan/` | Spec to downloads, installers, launch spec, reserved properties |
+| `internal/controller/` | The MinecraftInstance reconciler and resource builders |
+| `api/v1alpha1/` | The MinecraftInstance CRD types |
+| `config/` | CRD, RBAC and operator Deployment (`kubectl apply -k config/default`) |
+| `cmd/supervisor/`, `cmd/operator/` | The two binaries |
+| `Dockerfile.supervisor`, `Dockerfile.operator` | Images: static supervisor (`FROM scratch`), distroless operator |
 
 ## Supervisor
 
@@ -42,6 +48,32 @@ grpcurl -plaintext -H "$H" 127.0.0.1:9800 supervisor.v1.SupervisorService/Start
 Flags: `-data-root`, `-listen`, `-token-file`, `-readonly-token-file`,
 `-download-allow-host` (repeatable), `-console-lines`, `-no-autostart`,
 `-no-auth` (development only), `-log-level`.
+
+## Operator
+
+```sh
+kubectl apply -k config/default
+kubectl apply -f - <<'YAML'
+apiVersion: minecraft.bedini.au/v1alpha1
+kind: MinecraftInstance
+metadata:
+  name: craft
+  namespace: minecraft
+spec:
+  version: "26.3"
+  flavour:
+    fabric: {}
+  storage:
+    size: 20Gi
+    storageClassName: badssd-fs-retain
+YAML
+kubectl -n minecraft get mci craft -o yaml
+```
+
+The operator creates the Secret, PVC, Services and Deployment, waits for the
+pod, drives the supervisor through the install (downloads, EULA, properties,
+config files, launch spec) and starts the server. `spec.stopped: true` stops
+the server without removing the pod.
 
 ## Development
 

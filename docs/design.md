@@ -102,6 +102,7 @@ spec:
     fabric:                          # exactly one of vanilla|fabric|paper|forge
       loaderVersion: "0.19.5"        # optional; resolved to latest stable if absent
       installerVersion: ""           # optional
+    # paper: {build: 41, channel: stable}   # channel: stable|beta|alpha (least mature accepted)
   java:
     image: ""                        # full image reference; when empty the operator
                                      # derives it from the resolved Java major with its
@@ -143,6 +144,7 @@ spec:
       - {name: voice, port: 24454, protocol: UDP}
       - {name: bedrock, port: 19132, protocol: UDP}
   autostart: true                    # supervisor relaunches on boot
+  stopped: false                     # true stops the server but keeps the pod
   restartPolicy: manual              # manual | automatic (on staged config drift)
   upgrade:
     backupBeforeUpgrade: true
@@ -344,14 +346,19 @@ Taken from Lodestone's implementation, with the fixes noted.
 |---|---|---|
 | Vanilla | Mojang manifest `https://piston-meta.mojang.com/mc/game/version_manifest_v2.json` | per-version JSON `downloads.server.url` + `sha1` |
 | Fabric | `https://meta.fabricmc.net/v2/versions/game`; loader `…/versions/loader/{mc}`; installer `…/versions/installer` | launcher jar `https://meta.fabricmc.net/v2/versions/loader/{mc}/{loader}/{installer}/server/jar`. No published hash; observed digest recorded. Downloads the vanilla jar and libraries on first start into `.fabric/` and `libraries/` |
-| Paper | `https://api.papermc.io/v2/projects/paper` and `…/versions/{v}/builds` | highest build with `channel == default`, `…/builds/{b}/downloads/{name}`, sha256 from the API. PaperMC's newer Fill v3 API should be checked before building on v2 |
+| Paper | Fill v3: `https://fill.papermc.io/v3/projects/paper/versions/{v}/builds` (v2 was sunset in 2026, HTTP 410) | newest build whose channel (`STABLE`, `BETA`, `ALPHA`) is at least the spec's; the download entry `server:default` carries an absolute URL and sha256 |
 | Forge | `https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json` (recommended build, not the newest as Lodestone does) | installer `https://maven.minecraftforge.net/net/minecraftforge/forge/{build}/forge-{build}-installer.jar`, then `Run: java -jar forge-installer.jar --installServer /data` |
 | NeoForge, Quilt | later; same shape | |
 
 Defaults when the spec leaves a version unset: Fabric loader is the highest
 with `loader.stable && intermediary.stable`; Fabric installer is the first
 stable entry (Lodestone's comparator has a panic bug here); Paper build is the
-highest default-channel build; Forge build is the recommended one.
+newest in the requested channel or better; Forge build is the recommended one.
+
+Artifacts without a publisher digest (the Fabric launcher jar) are compared
+against the sha256 the operator observed when it first fetched or adopted
+them, recorded in `status.resolved`. A file that is present with no known
+digest is adopted as is, never re-downloaded.
 
 ### 6.2 Java
 
@@ -385,8 +392,12 @@ and is applied to the installer `Run` as well.
 - `server.properties`: read the file in place, merge the keys from the config
   file entry (if any) and the reserved keys, write back. Never written while
   running; staged and applied on the next restart.
-- `mods/`: exactly the jars in `spec.mods`, named by the upstream file name.
-  Jars not in the spec are removed. Modrinth entries resolve through
+- `mods/` (`plugins/` for Paper): the jars in `spec.mods`, named by the
+  upstream file name. Jars the operator installed earlier and that are no
+  longer in the spec are removed. Jars the operator never installed (an
+  adopted directory, or a hand-copied mod) are never deleted; they are
+  reported as an `UnmanagedMods` event so a typo in the spec cannot destroy
+  a world's mods. Modrinth entries resolve through
   `https://api.modrinth.com/v2/project/{id}/version/{version}` for the file
   URL and sha512, and the version's `game_versions` and `loaders` are checked
   against the spec.
@@ -492,9 +503,17 @@ Triggered by a change to `spec.version` or the flavour's pinned versions.
 
 ### 8.5 Delete
 
-The Deployment, Services, policies and scrape objects are deleted. The PVC is
-kept unless `retainOnDelete: false`. The instance Secret is kept with the PVC,
-since the management secret is written into `server.properties` on it.
+The Deployment, Services, Secret, policies and scrape objects are garbage
+collected through owner references. The PVC is kept unless
+`retainOnDelete: false`. A re-created instance adopting the claim gets a new
+management secret and rewrites it into `server.properties`.
+
+### 8.6 Pod probes
+
+The supervisor port (9800) drives the startup and liveness probes: the pod is
+alive when the supervisor answers, whatever the game does. The game port
+drives readiness, so a stopped server drops out of the game Service while the
+supervisor Service, which publishes not-ready addresses, stays reachable.
 
 ## 9. Storage
 
@@ -504,7 +523,10 @@ since the management secret is written into `server.properties` on it.
 - StorageClass `badssd-fs-retain`: same ZFS-LocalPV parameters as `badssd-fs`,
   `reclaimPolicy: Retain`. Added in the homelab repo. The operator never
   touches PersistentVolumes.
-- The operator sets no owner reference on the PVC. Retain protects against
+- With `retainOnDelete: true` (the default) the operator sets no owner
+  reference on the PVC, so deleting the instance leaves the claim. With
+  `false` the PVC carries an owner reference and is garbage collected. No
+  finalizer is needed. Retain on the StorageClass protects against
   accidental PVC deletion; it leaves a Released PV that needs manual
   re-adoption, which is the same procedure the NAS class already uses.
 - Only the server pod mounts the PVC. Everything else reads through the
@@ -524,8 +546,8 @@ Per instance:
 
 CiliumNetworkPolicies:
 
-- Ingress to the supervisor port from the operator, the stats exporter and
-  backup jobs only. There is no other management port.
+- Ingress to the supervisor port (9800) from the operator, the stats exporter
+  and backup jobs only. There is no other management port.
 - Ingress to the game ports from the world.
 - Egress from the server pod, as FQDN rules: `piston-meta.mojang.com`,
   `piston-data.mojang.com`, `launchermeta.mojang.com`, `libraries.minecraft.net`,
@@ -617,11 +639,13 @@ stays until then.
 
 ## 15. Phasing
 
-1. **Supervisor**: proto, connect-go server, process management, console,
-   download, run, files, staged writes, persistence, autostart. Testable alone
-   with `grpcurl` against a local directory.
-2. **Operator core**: CRD, Deployment/PVC/Secret/Service creation, vanilla and
-   Fabric provisioning, start/stop, adoption of an existing directory.
+1. **Supervisor** (done 2026-09-25): proto, connect-go server, process
+   management, console, download, run, files, staged writes, persistence,
+   autostart, tunnel. Testable alone with `grpcurl` against a local directory.
+2. **Operator core** (done 2026-09-25, not yet run on a cluster): CRD,
+   Deployment/PVC/Secret/Service creation, vanilla/Fabric/Paper/Forge
+   resolution and provisioning, mods and config files, start/stop, adoption
+   of an existing directory. Ready mirrors Running until phase 3.
 3. **MSMP**: client, status conditions, events, operator metrics.
 4. **Mods, config files, version change** with the upgrade guards and backup.
 5. **Monitoring**: stats exporter over the file API, `VMPodScrape`, log check,

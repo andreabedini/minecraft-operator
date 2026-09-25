@@ -6,13 +6,19 @@
 "aqua:golangci/golangci-lint" = "latest"
 "go:connectrpc.com/connect/cmd/protoc-gen-connect-go" = "latest"
 "go:google.golang.org/protobuf/cmd/protoc-gen-go" = "latest"
+"go:sigs.k8s.io/controller-tools/cmd/controller-gen" = "latest"
 
 [env]
 _.path = ["{{config_root}}/bin"]
 
 [tasks.generate]
-description = "Regenerate protobuf and connect code"
-run = "buf generate"
+description = "Regenerate protobuf/connect code, deepcopy, CRDs and RBAC"
+run = [
+  "buf generate",
+  "controller-gen object paths=./api/...",
+  "controller-gen crd paths=./api/... output:crd:dir=config/crd",
+  "controller-gen rbac:roleName=minecraft-operator paths=./internal/controller/... output:rbac:dir=config/rbac",
+]
 
 [tasks.lint]
 description = "Lint proto and Go"
@@ -21,6 +27,10 @@ run = ["buf lint", "golangci-lint run ./..."]
 [tasks.test]
 description = "Run Go tests with the race detector"
 run = "go test -race ./..."
+
+[tasks.build-operator]
+description = "Build the operator binary"
+run = "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/operator ./cmd/operator"
 
 [tasks.build-supervisor]
 description = "Build the static supervisor binary"
