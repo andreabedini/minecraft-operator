@@ -1,6 +1,8 @@
 # Minecraft operator: design
 
-Status: draft, 2026-09-25. Agreed in discussion; nothing implemented yet.
+Status: agreed 2026-09-25. Phases 1 to 3 of section 15 are implemented and
+tested (supervisor, operator core, management protocol); nothing has run on
+the cluster yet. Section 15 is the implementation plan and tracks progress.
 
 ## 1. Goal
 
@@ -218,16 +220,19 @@ Rules:
 Minimal and generic. It manages one directory (`/data`) and one supervised
 process. It does not know what Minecraft, Fabric or a mod is.
 
-Candidate building block: `github.com/go-proc/supervisor` and
-`github.com/go-proc/respawn` (pure Go, BSD-3, PID 1 subreaper, pluggable
-`Runtime` interface with `Create`, `Start`, `State`, `Kill`, `Delete`, restart
-state machine with backoff and anti-thrash). Stdio piping is left to the
-`Runtime` implementer, which is most of what this supervisor does, so the
-libraries would cover reaping and restart policy only. They are very new
-(first published August 2026, no stars, no tagged releases seen, Go 1.26), so
-the decision is deferred to phase 1: evaluate against a plain `os/exec` plus
-`SIGCHLD` reaper implementation, and adopt only if the abstraction earns its
-keep.
+Library decision (phase 1): `github.com/go-proc/supervisor` and
+`github.com/go-proc/respawn` were considered (pure Go, BSD-3, PID 1 subreaper,
+pluggable `Runtime` interface with `Create`, `Start`, `State`, `Kill`,
+`Delete`, restart state machine with backoff and anti-thrash) and not adopted.
+They leave stdio piping to the `Runtime` implementer, which is most of what
+this supervisor does, so they would have covered reaping and the restart
+policy only. Those two pieces are about eighty lines here, and the reaper has
+a requirement the library does not express: it must leave the managed child
+to the manager's own `Wait` (done by peeking with `waitid` and `WNOWAIT`
+before reaping). The libraries were also brand new at the time (first
+published August 2026, no tagged release), which is a poor fit for a PID 1
+component. The implementation is plain `os/exec` plus a `SIGCHLD` reaper. The
+evaluation was from their documentation and README, not from running them.
 
 - PID 1 of the JRE container. Reaps children.
 - Spawns the launch spec as a child, pipes stdin, stdout and stderr.
@@ -633,15 +638,14 @@ stays until then.
 
 ## 14. Open points and things to verify
 
-- Whether `go-proc/supervisor` is worth adopting (section 5.1).
 - Whether MinecraftForge exposes the management server; NeoForge and Paper do.
-- PaperMC Fill v3 versus the v2 builds API.
 - NeoForge and Quilt metadata URLs.
 - Backup destination and retention.
 - Whether `Archive` should also snapshot via the ZFS CSI when available, rather
   than tar.
-- Operator implementation language is Go with controller-runtime, matching the
-  supervisor and connect-go. Open to revisiting before scaffolding.
+- Operator implementation (decided in phase 2, see section 16): Go with
+  controller-runtime and controller-gen, kubebuilder conventions without the
+  kubebuilder or Operator SDK scaffold.
 
 ## 15. Phasing
 
@@ -660,3 +664,26 @@ stays until then.
    Grafana provisioning.
 6. **Cutover** of the live world, following section 13.
 7. **Paper and Forge**, then the dashboard.
+
+## 16. Implementation notes
+
+- **Language and framework.** Go, `sigs.k8s.io/controller-runtime` for the
+  manager, client cache, reconcile loop and metrics, and `controller-gen` for
+  deepcopy, the CRD and RBAC from markers. The repo follows the kubebuilder
+  layout (`api/v1alpha1`, `internal/controller`, `config/`, `cmd/`) so the
+  markers and tooling work, but neither `kubebuilder init` nor the Operator
+  SDK scaffold was run: both generate a Makefile and boilerplate around the
+  same library, and the Operator SDK's additions (OLM bundles, scorecard,
+  OperatorHub packaging) target publishing an operator, not running one on a
+  Flux-managed homelab cluster. Go also keeps one module with the supervisor
+  and one generated Connect client shared by operator, exporter and tests.
+- **Testing.** No envtest or cluster. The controller tests use the
+  controller-runtime fake client for the API server, the real supervisor
+  in-process over a temp directory, fake publisher endpoints, a fake `java`
+  script on `PATH`, and a fake management protocol server on a loopback port
+  that the supervisor tunnel connects to. Everything runs under `-race`.
+- **Plan cache.** Resolving a spec hits the publishers, so plans are cached
+  per instance generation and management secret. Observed digests from status
+  are merged into a fresh plan so a re-resolved Fabric launcher jar is not
+  re-downloaded.
+
