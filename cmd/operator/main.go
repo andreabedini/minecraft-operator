@@ -53,9 +53,11 @@ func main() {
 	}
 
 	reconciler := &controller.MinecraftInstanceReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		Recorder:          mgr.GetEventRecorderFor("minecraft-operator"),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// The core/v1 events API is still what kubectl describe shows best;
+		// the new events.k8s.io recorder changes the interface.
+		Recorder:          mgr.GetEventRecorderFor("minecraft-operator"), //nolint:staticcheck
 		Resolver:          upstream.NewResolver("minecraft-operator/" + version),
 		SupervisorImage:   *supervisorImage,
 		JavaImageTemplate: *javaImageTemplate,

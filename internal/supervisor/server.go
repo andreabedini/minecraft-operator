@@ -325,7 +325,7 @@ func (s *Server) ReadFile(ctx context.Context, req *connect.Request[supervisorv1
 	if err != nil {
 		return pathError(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
 		return err
@@ -497,7 +497,7 @@ func (s *Server) Tunnel(ctx context.Context, stream *connect.BidiStream[supervis
 	if err != nil {
 		return connect.NewError(connect.CodeUnavailable, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	errs := make(chan error, 2)
 	go func() {

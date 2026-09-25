@@ -103,7 +103,7 @@ func digestFile(path string, algo supervisorv1.DigestAlgorithm) (*supervisorv1.D
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var h hash.Hash
 	switch algo {
 	case supervisorv1.DigestAlgorithm_DIGEST_ALGORITHM_SHA1:

@@ -2,8 +2,11 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -25,6 +26,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/coder/websocket"
 
 	"github.com/andreabedini/minecraft-operator/api/v1alpha1"
 	"github.com/andreabedini/minecraft-operator/gen/supervisor/v1/supervisorv1connect"
@@ -126,7 +129,11 @@ func newHarness(t *testing.T) *harness {
 	sup := supervisor.New(supervisor.Config{Version: "test", AllowInsecureDownloads: true}, root, state, console, mgr, logger)
 	supMux := http.NewServeMux()
 	supMux.Handle(supervisorv1connect.NewSupervisorServiceHandler(sup))
-	supSrv := httptest.NewServer(h2c.NewHandler(supMux, &http2.Server{}))
+	supSrv := httptest.NewUnstartedServer(supMux)
+	supSrv.Config.Protocols = new(http.Protocols)
+	supSrv.Config.Protocols.SetHTTP1(true)
+	supSrv.Config.Protocols.SetUnencryptedHTTP2(true)
+	supSrv.Start()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -134,6 +141,10 @@ func newHarness(t *testing.T) *harness {
 		supSrv.Close()
 	})
 	httpClient := supervisorclient.NewHTTPClient()
+
+	// Fake management protocol server on a loopback port; the supervisor
+	// tunnel connects to it as the real server would be.
+	managementPort := fakeManagementServer(t)
 
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.MinecraftInstance{}).Build()
 	recorder := record.NewFakeRecorder(100)
@@ -147,7 +158,15 @@ func newHarness(t *testing.T) *harness {
 		NewSupervisorClient: func(_ string, token string) *supervisorclient.Client {
 			return supervisorclient.New(httpClient, supSrv.URL, token)
 		},
+		ManagementPort: managementPort,
 	}
+	t.Cleanup(func() {
+		rec.watchersMu.Lock()
+		defer rec.watchersMu.Unlock()
+		for _, w := range rec.watchers {
+			w.cancel()
+		}
+	})
 	return &harness{t: t, client: c, rec: rec, recorder: recorder, dataDir: dataDir, sup: sup, artifact: artifact, jarBody: jarBody}
 }
 
@@ -292,7 +311,10 @@ func TestReconcileCreatesResourcesAndInstalls(t *testing.T) {
 		t.Errorf("Running = %+v; events %v", c, h.drainEvents())
 	}
 	if inst.Status.Phase != "Ready" {
-		t.Errorf("phase = %s", inst.Status.Phase)
+		t.Errorf("phase = %s (Ready = %+v)", inst.Status.Phase, condition(inst, v1alpha1.ConditionReady))
+	}
+	if inst.Status.Players == nil || inst.Status.Players.Online != 1 || inst.Status.ManagementProtocolVersion != "3.1.0" {
+		t.Errorf("management status = players %+v, protocol %q", inst.Status.Players, inst.Status.ManagementProtocolVersion)
 	}
 	events := strings.Join(h.drainEvents(), "\n")
 	if !strings.Contains(events, "Downloaded") || !strings.Contains(events, "Started") {
@@ -483,4 +505,51 @@ func TestPodOverridesApply(t *testing.T) {
 	if dep.Spec.Template.Labels[labelInstance] != "o" {
 		t.Error("selector label lost")
 	}
+}
+
+// fakeManagementServer answers minecraft:server/status and rpc.discover on
+// a random loopback port and returns that port.
+func fakeManagementServer(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		for {
+			_, data, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+			var req struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(data, &req) != nil {
+				continue
+			}
+			var result string
+			switch req.Method {
+			case "rpc.discover":
+				result = `{"info":{"version":"3.1.0"}}`
+			case "minecraft:server/status":
+				result = `{"started":true,"players":[{"id":"u","name":"jeb_"}],"version":{"name":"26.3","protocol":775}}`
+			default:
+				result = `true`
+			}
+			_ = conn.Write(r.Context(), websocket.MessageText, []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":%s}`, req.ID, result)))
+		}
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return ln.Addr().(*net.TCPAddr).Port
 }

@@ -395,10 +395,6 @@ type MinecraftInstanceList struct {
 	Items           []MinecraftInstance `json:"items"`
 }
 
-func init() {
-	SchemeBuilder.Register(&MinecraftInstance{}, &MinecraftInstanceList{})
-}
-
 // FlavourName returns the flavour as a string.
 func (s *FlavourSpec) FlavourName() string {
 	switch {

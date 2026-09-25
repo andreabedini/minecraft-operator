@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -20,8 +19,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	supervisorv1 "github.com/andreabedini/minecraft-operator/gen/supervisor/v1"
@@ -58,7 +55,10 @@ func newTestEnv(t *testing.T) *testEnv {
 	mux := http.NewServeMux()
 	mux.Handle(supervisorv1connect.NewSupervisorServiceHandler(srv,
 		connect.WithInterceptors(NewAuthInterceptor(Tokens{Full: testFullToken, ReadOnly: testReadOnlyToken}))))
-	hs := httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
+	hs := httptest.NewUnstartedServer(mux)
+	hs.Config.Protocols = new(http.Protocols)
+	hs.Config.Protocols.SetHTTP1(true)
+	hs.Config.Protocols.SetUnencryptedHTTP2(true)
 	hs.Start()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -67,13 +67,9 @@ func newTestEnv(t *testing.T) *testEnv {
 		hs.Close()
 	})
 	// Bidi streams need HTTP/2; speak h2c to the plaintext test server.
-	h2 := &http.Client{Transport: &http2.Transport{
-		AllowHTTP: true,
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, network, addr)
-		},
-	}}
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	h2 := &http.Client{Transport: &http.Transport{Protocols: protocols}}
 	return &testEnv{root: root, server: srv, url: hs.URL, http: h2}
 }
 
@@ -690,7 +686,7 @@ func TestTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -698,7 +694,7 @@ func TestTunnel(t *testing.T) {
 				return
 			}
 			go func() {
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				buf := make([]byte, 1024)
 				for {
 					n, err := conn.Read(buf)

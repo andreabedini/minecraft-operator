@@ -24,7 +24,7 @@ func (s *Server) checkDownloadURL(raw string) (*url.URL, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.Scheme != "https" && !(s.cfg.AllowInsecureDownloads && u.Scheme == "http") {
+	if u.Scheme != "https" && (!s.cfg.AllowInsecureDownloads || u.Scheme != "http") {
 		return nil, fmt.Errorf("scheme %q not allowed", u.Scheme)
 	}
 	if u.Hostname() == "" {
@@ -67,7 +67,7 @@ func (s *Server) download(ctx context.Context, req *supervisorv1.DownloadRequest
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, fmt.Errorf("GET %s: %s", u.Redacted(), resp.Status)
 	}

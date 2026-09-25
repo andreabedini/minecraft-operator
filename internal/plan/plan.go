@@ -47,6 +47,9 @@ type Options struct {
 	ManagementSecret string
 	// GamePort is the server-port property.
 	GamePort int32
+	// ManagementPort overrides the loopback port of the management protocol
+	// (tests). Zero means ManagementPort.
+	ManagementPort int
 }
 
 // Download is a file the supervisor must fetch.
@@ -101,6 +104,9 @@ func Resolve(ctx context.Context, r *upstream.Resolver, spec *v1alpha1.Minecraft
 	}
 	if opts.GamePort == 0 {
 		opts.GamePort = 25565
+	}
+	if opts.ManagementPort == 0 {
+		opts.ManagementPort = ManagementPort
 	}
 	vanilla, err := r.Vanilla(ctx, spec.Version)
 	if err != nil {
@@ -212,16 +218,16 @@ func Resolve(ctx context.Context, r *upstream.Resolver, spec *v1alpha1.Minecraft
 		"enable-rcon":                   "false",
 		"management-server-enabled":     "true",
 		"management-server-host":        "127.0.0.1",
-		"management-server-port":        fmt.Sprint(ManagementPort),
+		"management-server-port":        fmt.Sprint(opts.ManagementPort),
 		"management-server-tls-enabled": "false",
 		"management-server-secret":      opts.ManagementSecret,
 		"status-heartbeat-interval":     "15",
 	}
-	p.Launch = buildLaunch(spec, target)
+	p.Launch = buildLaunch(spec, target, opts.ManagementPort)
 	return p, nil
 }
 
-func buildLaunch(spec *v1alpha1.MinecraftInstanceSpec, target []string) *supervisorv1.LaunchSpec {
+func buildLaunch(spec *v1alpha1.MinecraftInstanceSpec, target []string, managementPort int) *supervisorv1.LaunchSpec {
 	minMiB, maxMiB := spec.JVM.MinMemoryMiB, spec.JVM.MaxMemoryMiB
 	if minMiB <= 0 {
 		minMiB = defaultMinMemoryMiB
@@ -264,7 +270,7 @@ func buildLaunch(spec *v1alpha1.MinecraftInstanceSpec, target []string) *supervi
 		},
 		Resume: &supervisorv1.ConsoleHook{Commands: []string{"save-on"}},
 		TunnelTargets: map[string]*supervisorv1.TunnelTarget{
-			ManagementTunnelTarget: {Address: fmt.Sprintf("127.0.0.1:%d", ManagementPort)},
+			ManagementTunnelTarget: {Address: fmt.Sprintf("127.0.0.1:%d", managementPort)},
 		},
 	}
 }

@@ -6,7 +6,6 @@ package supervisorclient
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	supervisorv1 "github.com/andreabedini/minecraft-operator/gen/supervisor/v1"
@@ -50,16 +48,21 @@ func (b bearer) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.
 	return next
 }
 
-// NewHTTPClient returns an h2c-capable HTTP client for plaintext gRPC.
+// NewHTTPClient returns an HTTP client speaking cleartext HTTP/2 (h2c) for
+// plaintext gRPC inside the pod network.
 func NewHTTPClient() *http.Client {
-	return &http.Client{Transport: &http2.Transport{
-		AllowHTTP: true,
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			d := net.Dialer{Timeout: 10 * time.Second}
-			return d.DialContext(ctx, network, addr)
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	return &http.Client{Transport: &http.Transport{
+		Protocols: protocols,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: 30 * time.Second,
+			PingTimeout:     10 * time.Second,
 		},
-		ReadIdleTimeout: 30 * time.Second,
-		PingTimeout:     10 * time.Second,
 	}}
 }
 
@@ -154,7 +157,7 @@ func (c *Client) Download(ctx context.Context, url, path string, digest *supervi
 	if err != nil {
 		return nil, err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var result *supervisorv1.DownloadResult
 	for stream.Receive() {
 		if r := stream.Msg().GetResult(); r != nil {
@@ -186,7 +189,7 @@ func (c *Client) Run(ctx context.Context, command string, args []string, working
 	if err != nil {
 		return nil, err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	res := &RunResult{ExitCode: -1}
 	for stream.Receive() {
 		if o := stream.Msg().GetOutput(); o != nil {
@@ -208,7 +211,7 @@ func (c *Client) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var buf bytes.Buffer
 	for stream.Receive() {
 		buf.Write(stream.Msg().GetData())
@@ -276,7 +279,7 @@ func (c *Client) Archive(ctx context.Context, w io.Writer, paths []string, consi
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for stream.Receive() {
 		if _, err := w.Write(stream.Msg().GetData()); err != nil {
 			return err

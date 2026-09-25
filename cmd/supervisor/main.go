@@ -19,8 +19,6 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/grpchealth"
 	"connectrpc.com/grpcreflect"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/andreabedini/minecraft-operator/gen/supervisor/v1/supervisorv1connect"
 	"github.com/andreabedini/minecraft-operator/internal/supervisor"
@@ -125,9 +123,14 @@ func main() {
 	mux.Handle(grpcreflect.NewHandlerV1Alpha(reflector))
 	mux.Handle(grpchealth.NewHandler(grpchealth.NewStaticChecker(supervisorv1connect.SupervisorServiceName)))
 
+	// gRPC needs HTTP/2; inside the pod network it is cleartext (h2c).
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 	httpServer := &http.Server{
 		Addr:              *listen,
-		Handler:           h2c.NewHandler(mux, &http2.Server{}),
+		Handler:           mux,
+		Protocols:         protocols,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -173,7 +176,7 @@ func copySelf(dest string) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}

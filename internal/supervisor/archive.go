@@ -148,7 +148,7 @@ func (s *Server) tarTree(ctx context.Context, tw *tar.Writer, root string) error
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		// Copy at most the header size: the file may grow while we read.
 		if _, err := io.CopyN(tw, f, hdr.Size); err != nil && err != io.EOF {
 			return err

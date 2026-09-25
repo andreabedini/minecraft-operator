@@ -570,12 +570,18 @@ in the supervisor is for the dashboard, not for retention.
 
 Metrics, three layers:
 
-1. **Operator.** Per-instance gauges from MSMP: `minecraft_server_started`,
-   `minecraft_players_online`, `minecraft_players_max`, `minecraft_last_save_timestamp`,
-   `minecraft_upgrade_progress`, plus condition gauges and reconcile metrics from
-   controller-runtime. Players online comes from `players/joined` and
-   `players/left` notifications reconciled against `players` on connect. This
-   closes the gap where the exporter's RCON `list` breaks after restarts.
+1. **Operator.** Per-instance gauges from MSMP, labelled `namespace` and
+   `name`: `minecraft_instance_started`, `minecraft_instance_players_online`,
+   `minecraft_instance_last_save_timestamp_seconds`,
+   `minecraft_instance_world_upgrade_progress` and the counter
+   `minecraft_instance_player_joins_total`, plus controller-runtime's
+   reconcile metrics, all on the operator's metrics endpoint. A per-instance
+   watcher goroutine keeps a management connection through the tunnel,
+   re-queries `server/status` on `players/joined` and `players/left` (exact
+   counts, not deltas), records `server/saved`, follows `world/upgrade_*`,
+   emits Kubernetes Events for joins, leaves, start, stop and upgrades, and
+   triggers a reconcile so status follows within seconds. This closes the gap
+   where the exporter's RCON `list` breaks after restarts.
 2. **Stats exporter.** The patched dirien exporter runs as its own Deployment
    created by the operator when `metrics.statsExporter` is true. Its file
    reads are replaced by `ReadFile` and `ListFiles` calls with the read-only
@@ -646,7 +652,9 @@ stays until then.
    Deployment/PVC/Secret/Service creation, vanilla/Fabric/Paper/Forge
    resolution and provisioning, mods and config files, start/stop, adoption
    of an existing directory. Ready mirrors Running until phase 3.
-3. **MSMP**: client, status conditions, events, operator metrics.
+3. **MSMP** (done 2026-09-25): JSON-RPC client over the tunnel, `Ready`
+   from `server/status`, players and protocol version in status, the
+   notification watcher, events and operator metrics.
 4. **Mods, config files, version change** with the upgrade guards and backup.
 5. **Monitoring**: stats exporter over the file API, `VMPodScrape`, log check,
    Grafana provisioning.

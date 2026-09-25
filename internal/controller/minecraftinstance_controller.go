@@ -21,7 +21,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/andreabedini/minecraft-operator/api/v1alpha1"
 	supervisorv1 "github.com/andreabedini/minecraft-operator/gen/supervisor/v1"
@@ -50,8 +53,15 @@ type MinecraftInstanceReconciler struct {
 	JavaImageTemplate string
 	// NewSupervisorClient builds a client for a pod. Tests override it.
 	NewSupervisorClient func(baseURL, token string) *supervisorclient.Client
+	// ManagementPort overrides the management protocol's loopback port
+	// (tests). Zero means plan.ManagementPort.
+	ManagementPort int
 
-	plans sync.Map // string(uid)/generation → *plan.Plan
+	plans      sync.Map // string(uid)/generation → *plan.Plan
+	watchersMu sync.Mutex
+	watchers   map[types.NamespacedName]*watcher
+	// triggers carries reconcile requests raised by the watchers.
+	triggers chan event.TypedGenericEvent[client.Object]
 }
 
 // +kubebuilder:rbac:groups=minecraft.bedini.au,resources=minecraftinstances,verbs=get;list;watch;create;update;patch;delete
@@ -71,11 +81,13 @@ func (r *MinecraftInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return supervisorclient.New(httpClient, baseURL, token)
 		}
 	}
+	r.triggers = make(chan event.TypedGenericEvent[client.Object], 64)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.MinecraftInstance{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
+		WatchesRawSource(source.Channel(r.triggers, &handler.EnqueueRequestForObject{})).
 		Complete(r)
 }
 
@@ -84,11 +96,15 @@ func (r *MinecraftInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	logger := log.FromContext(ctx)
 	inst := &v1alpha1.MinecraftInstance{}
 	if err := r.Get(ctx, req.NamespacedName, inst); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.stopWatcher(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !inst.DeletionTimestamp.IsZero() {
 		// Owned resources are garbage collected; the PVC follows
 		// retainOnDelete through its owner reference.
+		r.stopWatcher(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 
@@ -145,6 +161,7 @@ func (r *MinecraftInstanceReconciler) reconcile(ctx context.Context, inst *v1alp
 		return ctrl.Result{}, err
 	}
 	if pod == nil || pod.Status.PodIP == "" {
+		r.stopWatcher(types.NamespacedName{Namespace: inst.Namespace, Name: inst.Name})
 		setCondition(inst, v1alpha1.ConditionSupervisorReady, metav1.ConditionFalse, "PodPending", "no running pod yet")
 		setCondition(inst, v1alpha1.ConditionRunning, metav1.ConditionFalse, "PodPending", "")
 		setCondition(inst, v1alpha1.ConditionReady, metav1.ConditionFalse, "PodPending", "")
@@ -224,14 +241,46 @@ func (r *MinecraftInstanceReconciler) reconcile(ctx context.Context, inst *v1alp
 	} else {
 		setCondition(inst, v1alpha1.ConditionRunning, metav1.ConditionFalse, "NotStarted", "")
 	}
-	// Ready follows the management protocol from phase 3; until then it
-	// mirrors Running.
-	if running {
-		setCondition(inst, v1alpha1.ConditionReady, metav1.ConditionTrue, "Running", "")
-	} else {
+	if !running {
+		r.stopWatcher(types.NamespacedName{Namespace: inst.Namespace, Name: inst.Name})
+		inst.Status.Players = nil
+		inst.Status.Upgrade = nil
 		setCondition(inst, v1alpha1.ConditionReady, metav1.ConditionFalse, "NotRunning", "")
+		return ctrl.Result{RequeueAfter: requeueRunning}, nil
 	}
-	return ctrl.Result{RequeueAfter: requeueRunning}, nil
+
+	// Ready comes from the management protocol through the supervisor
+	// tunnel. The watcher keeps a connection for notifications; the query
+	// here gives an authoritative answer for this reconcile.
+	managementSecret := string(secret.Data[secretKeyManagement])
+	live := r.ensureWatcher(inst, pod, sup, managementSecret)
+	srvState, protoVersion, err := queryManagement(ctx, sup, managementSecret)
+	if err != nil {
+		setCondition(inst, v1alpha1.ConditionReady, metav1.ConditionFalse, "ManagementUnavailable", managementUnavailable(err))
+		return ctrl.Result{RequeueAfter: requeueSoon}, nil
+	}
+	if protoVersion != "" {
+		inst.Status.ManagementProtocolVersion = protoVersion
+	}
+	players := int32(len(srvState.Players))
+	inst.Status.Players = &v1alpha1.PlayersStatus{Online: players}
+	if _, lastSave, upgradePhase, upgradeProgress := live.snapshot(); true {
+		if lastSave != nil {
+			t := metav1.NewTime(*lastSave)
+			inst.Status.LastSave = &t
+		}
+		if upgradePhase != "" {
+			inst.Status.Upgrade = &v1alpha1.UpgradeStatus{Phase: upgradePhase, Progress: upgradeProgress}
+		} else {
+			inst.Status.Upgrade = nil
+		}
+	}
+	if srvState.Started {
+		setCondition(inst, v1alpha1.ConditionReady, metav1.ConditionTrue, "Started", "")
+		return ctrl.Result{RequeueAfter: requeueRunning}, nil
+	}
+	setCondition(inst, v1alpha1.ConditionReady, metav1.ConditionFalse, "Starting", "server is loading")
+	return ctrl.Result{RequeueAfter: requeueSoon}, nil
 }
 
 // resolvePlan returns the cached plan for this generation or resolves it.
@@ -249,6 +298,7 @@ func (r *MinecraftInstanceReconciler) resolvePlan(ctx context.Context, inst *v1a
 		JavaImageTemplate: r.JavaImageTemplate,
 		ManagementSecret:  managementSecret,
 		GamePort:          gamePort(inst),
+		ManagementPort:    r.ManagementPort,
 	})
 	if err != nil {
 		return nil, err
@@ -452,5 +502,3 @@ func trimErr(err error) string {
 	}
 	return s
 }
-
-var _ = types.NamespacedName{}
