@@ -1,9 +1,11 @@
 # Test, then build the operator and supervisor images with ko.
 #
-#   pull request  build only, nothing pushed
-#   push to main  push :main and :sha-<short>
-#   tag v*        push :<tag> and :latest, and publish a GitHub release with
-#                 install.yaml pinned to the image digests
+#   pull request    build only, nothing pushed
+#   push to main    push :main and :sha-<short>
+#   tag vX.Y.Z      push :vX.Y.Z, :vX.Y and :latest, and publish a GitHub
+#                   release with install.yaml pinned to the image digests
+#   tag vX.Y.Z-rc1  push :vX.Y.Z-rc1 only, and publish a pre-release
+#   manual run      like a push when run on main or a tag, else build only
 #
 # The binaries carry VERSION, and the operator defaults its supervisor image
 # to supervisor:<VERSION>, so both images always get the VERSION tag.
@@ -14,6 +16,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -47,9 +50,16 @@ jobs:
       - name: Version and tags
         run: |
           case "$GITHUB_REF" in
-            refs/tags/v*) version=$GITHUB_REF_NAME; tags=$version,latest; push=true ;;
+            refs/tags/v*)
+              version=$GITHUB_REF_NAME; tags=$version; push=true
+              # Plain releases also move :vX.Y and :latest; pre-releases don't.
+              if [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                tags=$tags,${version%.*},latest
+              fi
+              ;;
             refs/heads/main) version=sha-${GITHUB_SHA::7}; tags=$version,main; push=true ;;
-            *) version=pr-${{ github.event.pull_request.number }}; tags=$version; push=false ;;
+            refs/pull/*) version=pr-${{ github.event.pull_request.number }}; tags=$version; push=false ;;
+            *) version=sha-${GITHUB_SHA::7}; tags=$version; push=false ;;
           esac
           {
             echo "VERSION=$version"
@@ -92,4 +102,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" install.yaml --generate-notes --verify-tag
+        run: |
+          args=(--generate-notes --verify-tag)
+          if [[ $GITHUB_REF_NAME == *-* ]]; then args+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" install.yaml "${args[@]}"

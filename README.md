@@ -34,8 +34,12 @@ ghcr.io/andreabedini/minecraft-operator/supervisor
 
 | Tag | Built from |
 |---|---|
-| `vX.Y.Z`, `latest` | a release tag |
+| `vX.Y.Z`, `vX.Y`, `latest` | a release tag |
+| `vX.Y.Z-rc1` and similar | a pre-release tag, which moves no other tag |
 | `main`, `sha-<short>` | every push to `main` |
+
+Pin the operator to a full version such as `vX.Y.Z`. The operator pulls the
+supervisor tagged with its own full version, whichever tag you picked it by.
 
 The operator uses the supervisor image with its own version tag unless
 `SUPERVISOR_IMAGE` (or `spec.supervisor.image` on an instance) says
