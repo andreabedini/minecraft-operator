@@ -72,7 +72,7 @@ func (h *harness) waitReady(name string) *v1alpha1.MinecraftInstance {
 		return inst.Status.Phase
 	}).WithTimeout(readyTimeout).WithPolling(poll).Should(gomega.Equal("Ready"), func() string {
 		return describeInstance(inst)
-	}())
+	})
 	return inst
 }
 
