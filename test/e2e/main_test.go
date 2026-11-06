@@ -37,6 +37,8 @@ import (
 const (
 	operatorNamespace = "minecraft-operator"
 	operatorName      = "minecraft-operator"
+	// leaderLease is LeaderElectionID in cmd/operator/main.go.
+	leaderLease = "minecraft-operator.minecraft.bedini.au"
 )
 
 var (

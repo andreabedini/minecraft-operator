@@ -9,6 +9,7 @@ import (
 
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -113,6 +114,17 @@ func (h *harness) events(name, reason string) int {
 	return n
 }
 
+// leaseHolder returns the identity holding the operator's leader lease, or ""
+// if there is none. Each operator process has its own identity.
+func (h *harness) leaseHolder() string {
+	var lease coordinationv1.Lease
+	err := h.c.Get(h.ctx, types.NamespacedName{Namespace: operatorNamespace, Name: leaderLease}, &lease)
+	if err != nil || lease.Spec.HolderIdentity == nil {
+		return ""
+	}
+	return *lease.Spec.HolderIdentity
+}
+
 func (h *harness) scaleOperator(replicas int32) {
 	h.t.Helper()
 	var dep appsv1.Deployment
@@ -174,6 +186,8 @@ func TestInstanceLifecycle(t *testing.T) {
 			h := newHarness(ctx, t, cfg)
 			before := h.serverPod(name)
 			startedBefore := h.events(name, "Started")
+			holderBefore := h.leaseHolder()
+			h.g.Expect(holderBefore).NotTo(gomega.BeEmpty())
 
 			var pods corev1.PodList
 			h.g.Expect(h.c.List(ctx, &pods, client.InNamespace(operatorNamespace), client.MatchingLabels{"app.kubernetes.io/name": operatorName})).To(gomega.Succeed())
@@ -187,7 +201,11 @@ func TestInstanceLifecycle(t *testing.T) {
 				return d.Status.AvailableReplicas
 			}).WithTimeout(2 * time.Minute).WithPolling(poll).Should(gomega.Equal(int32(1)))
 
-			// Give the new operator a full reconcile cycle to do something wrong.
+			// The new operator reconciles nothing until the old lease expires.
+			h.g.Eventually(h.leaseHolder).WithTimeout(2 * time.Minute).WithPolling(poll).
+				Should(gomega.And(gomega.Not(gomega.BeEmpty()), gomega.Not(gomega.Equal(holderBefore))))
+
+			// Give the new leader a full reconcile cycle to do something wrong.
 			time.Sleep(20 * time.Second)
 			after := h.serverPod(name)
 			h.g.Expect(after.UID).To(gomega.Equal(before.UID), "server pod was replaced")
