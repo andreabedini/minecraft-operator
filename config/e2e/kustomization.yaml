@@ -17,9 +17,6 @@ patches:
         path: /spec/template/spec/containers/0/imagePullPolicy
         value: IfNotPresent
       - op: replace
-        path: /spec/template/spec/containers/0/args
-        value: []
-      - op: replace
         path: /spec/template/spec/containers/0/env
         value:
           - {name: SUPERVISOR_IMAGE, value: docker.io/minecraft-operator/supervisor:e2e}
